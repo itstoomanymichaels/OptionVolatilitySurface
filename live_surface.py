@@ -72,7 +72,7 @@ def start_app(symbol="SPY"):
     underlying.currency = 'USD'
 
     app.reqContractDetails(1, underlying)
-    app.resolve.wait(timeout = 5)
+    app.resolved.wait(timeout = 5)
     
     #This number should be set to the reqId number you set up in tickPrice(), gets the mkt data (spot price) for the
     app.reqMktData(999, underlying, "", False, False, [])
@@ -107,3 +107,85 @@ def start_app(symbol="SPY"):
 
 
 
+class PlotState:
+
+    def __init__(self):
+        self.is_locked = False
+
+    def toggle(self, event):
+        self.is_locked = not self.is_locked
+        btn_label.set_text("UNLOCK UPDATES" if self.is_locked else "LOCK UPDATES")
+        plt.draw()
+
+def live_desktop_plot(app):
+    plt.ion()
+    fig = plt.figure(figsize=(16, 9))
+    fig.canvas.manager.set_window_title("Live Volatility Surface")
+    fig.patch.set_facecolor("#0b0d0f")
+
+    ax_3d = plt.subplot2grid((1, 3), (0,0), colspan=2, projection='3d')
+    ax_skew = plt.subplot2grid((1,3), (0,2))
+
+    state = PlotState()
+    ax_button = plt.axes([.42, .03, .12, .04])
+    global btn_label
+    btn = Button(ax_button, 'LOCK UPDATES', color='#1f2329', hovercolor='2d333b')
+    btn_label = btn.label
+    btn_label.set_color('white')
+    btn_label.set_fontsize(9)
+    btn.on_clicked(state.toggle)
+
+    print(" --- Live Implied Volatility Surface Started --- ")
+
+    #Gets the data from live surface app to create the plots, surface, and skew
+    try:
+        while True:
+            if not state.is_locked:
+                current_data = []
+                req_ids = list(app.iv_dict.keys())
+                for rid in req_ids:
+                    iv = app.iv_dict[rid]
+                    exp, strike = app.id_map[rid]
+                    current_data.append({'Expiry': exp, 'Strike': strike, 'IV': iv})
+                
+                #Threshold for visualization
+                if len(current_data) > 10:
+                    df = pd.DataFrame(current_data)
+                    pivot = df.pivot_table(index='Expiry', columns='Strike', values='IV').sort_index().sort_index(axis=1)
+                    pivot = pivot.interpolate(method='linear', axis=0).bfill().ffill()
+
+                    X, Y_idx = np.meshgrid(pivot.columns, np.arange(len(pivot.index)))
+                    Z = pivot.values
+
+                    curr_elev, curr_azim = ax_3d.elev, ax_3d.azim
+
+                    ax_3d.clear()
+                    ax_3d.set_facecolor('#0b0d0f')
+                    ax_3d.plot_surface(X, Y_idx, Z, cmap='magma', edgecolor='white', lw=.1, alpha=.9)
+
+                    ax_3d.set_yticks(np.arange(len(pivot.index)))
+                    ax_3d.set_yticklabels(pivot.index)
+                    ax_3d.set_title(f"Live Volatility Surface | {time.strftime('%H:%M:%S')}", color='white')
+                    ax_3d.view_init(elev=curr_elev, azim=curr_azim)
+
+                    ax_skew.clear()
+                    ax_skew.set_facecolor('#161b22')
+                    #Gets the nearest expiry and locates the ivs for said expiration
+                    nearest_exp = pivot.index[0]
+                    skew_data = pivot.iloc[0]
+                    ax_skew.set_title(f"FRONT-MONTH SKEW {nearest_exp}", color='white')
+                    ax_skew.axvline(x=app.spot_price, color='#ff3e3e', linestylr='--')
+                    ax_skew.plot(skew_data.index, skew_data.values, marker='o', color ='#00f2ff')
+
+            #Not needed for calibration, would comment out if so, but for visualizaition this is fine
+            plt.pause(.5)
+    
+    except KeyboardInterrupt:
+        app.disconnect()
+        plt.close()
+
+if __name__ == '__main__':
+    app_instance = start_app()
+    print("App started")
+    time.sleep(10)
+    live_desktop_plot(app_instance)
